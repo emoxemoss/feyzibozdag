@@ -60,18 +60,59 @@ def ease_out(t):
 
 
 # ---------------------------------------------------------------- seslendirme
-# TTS_ENGINE: "edge" (Microsoft Edge doğal sesler, önerilen) veya "gtts" (Google)
-# Ortam değişkeni ile değiştirilebilir:  TTS_VOICE=tr-TR-EmelNeural python3 render.py
+# TTS_ENGINE: "gemini" (Google AI Studio, en gerçekçi), "edge" (Microsoft Edge) veya "gtts"
+# Örnekler:
+#   TTS_VOICE=tr-TR-EmelNeural python3 render.py
+#   TTS_ENGINE=gemini TTS_VOICE=Charon python3 render.py
 SR = 44100
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "edge")
-TTS_VOICE = os.environ.get("TTS_VOICE", "tr-TR-AhmetNeural")
+TTS_VOICE = os.environ.get("TTS_VOICE", "Charon" if TTS_ENGINE == "gemini" else "tr-TR-AhmetNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "+4%")
-VOICE_DIR = os.path.join(OUT, "voice", TTS_VOICE if TTS_ENGINE == "edge" else "gtts")
+VOICE_DIR = os.path.join(OUT, "voice", "gtts" if TTS_ENGINE == "gtts" else f"{TTS_ENGINE}-{TTS_VOICE}")
 VOICE_TEMPO = 1.12 if TTS_ENGINE == "gtts" else 1.0
 VOICE_LEAD = 0.25    # ses, sahne başladıktan bu kadar sonra girer
 
 
+GEMINI_MODEL = os.environ.get("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+GEMINI_STYLE = os.environ.get(
+    "GEMINI_STYLE",
+    "Türkçe, sakin, samimi ve derin bir sesle; karşındaki kişiyle sohbet eden bir "
+    "motivasyon konuşmacısı gibi, doğal duraklamalarla oku")
+
+
+def tts_gemini(text, mp3):
+    """Google AI Studio (Gemini) TTS. Anahtar: GEMINI_API_KEY ortam değişkeni
+    ya da ortamın network secret'ı (proxy x-goog-api-key başlığını ekler)."""
+    import base64, time, requests
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {"Content-Type": "application/json"}
+    if os.environ.get("GEMINI_API_KEY"):
+        headers["x-goog-api-key"] = os.environ["GEMINI_API_KEY"]
+    body = {
+        "contents": [{"parts": [{"text": f"{GEMINI_STYLE}: {text}"}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": TTS_VOICE}}},
+        },
+    }
+    verify = "/root/.ccr/ca-bundle.crt" if os.path.exists("/root/.ccr/ca-bundle.crt") else True
+    for attempt in range(6):
+        r = requests.post(url, json=body, headers=headers, timeout=120, verify=verify)
+        if r.status_code in (429, 500, 503):
+            time.sleep(15 * (attempt + 1))  # ücretsiz katman dakika limiti
+            continue
+        r.raise_for_status()
+        break
+    else:
+        r.raise_for_status()
+    pcm = base64.b64decode(r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "s16le", "-ar", "24000", "-ac", "1",
+                    "-i", "-", "-b:a", "192k", mp3], input=pcm, check=True)
+
+
 def tts(text, mp3):
+    if TTS_ENGINE == "gemini":
+        return tts_gemini(text, mp3)
     if TTS_ENGINE == "gtts":
         from gtts import gTTS
         gTTS(text, lang="tr").save(mp3)
