@@ -59,25 +59,45 @@ def ease_out(t):
     return 1 - (1 - t) ** 3
 
 
-# ---------------------------------------------------------------- seslendirme (Google TTS)
+# ---------------------------------------------------------------- seslendirme
+# TTS_ENGINE: "edge" (Microsoft Edge doğal sesler, önerilen) veya "gtts" (Google)
+# Ortam değişkeni ile değiştirilebilir:  TTS_VOICE=tr-TR-EmelNeural python3 render.py
 SR = 44100
-VOICE_DIR = os.path.join(OUT, "voice")
-VOICE_TEMPO = 1.12   # gTTS biraz yavaş konuşuyor, hafif hızlandır
+TTS_ENGINE = os.environ.get("TTS_ENGINE", "edge")
+TTS_VOICE = os.environ.get("TTS_VOICE", "tr-TR-AhmetNeural")
+TTS_RATE = os.environ.get("TTS_RATE", "+4%")
+VOICE_DIR = os.path.join(OUT, "voice", TTS_VOICE if TTS_ENGINE == "edge" else "gtts")
+VOICE_TEMPO = 1.12 if TTS_ENGINE == "gtts" else 1.0
 VOICE_LEAD = 0.25    # ses, sahne başladıktan bu kadar sonra girer
 
 
+def tts(text, mp3):
+    if TTS_ENGINE == "gtts":
+        from gtts import gTTS
+        gTTS(text, lang="tr").save(mp3)
+        return
+    cmd = ["edge-tts", "--voice", TTS_VOICE, f"--rate={TTS_RATE}", "--text", text, "--write-media", mp3]
+    if os.environ.get("HTTPS_PROXY"):
+        cmd[1:1] = ["--proxy", os.environ["HTTPS_PROXY"]]
+    env = dict(os.environ)
+    if os.path.exists("/root/.ccr/ca-bundle.crt"):
+        env["SSL_CERT_FILE"] = "/root/.ccr/ca-bundle.crt"
+    subprocess.run(cmd, check=True, env=env, capture_output=True)
+
+
 def load_voice(i, text):
-    """Satırı gTTS ile seslendir, sessizlikleri kırp, 44.1k mono float dizi döndür (önbellekli)."""
+    """Satırı seslendir, sessizlikleri kırp, 44.1k mono float dizi döndür (önbellekli)."""
     os.makedirs(VOICE_DIR, exist_ok=True)
     mp3 = os.path.join(VOICE_DIR, f"{i:02d}.mp3")
     raw = os.path.join(VOICE_DIR, f"{i:02d}.raw")
-    if not os.path.exists(mp3):
-        from gtts import gTTS
-        gTTS(text, lang="tr").save(mp3)
+    if not os.path.exists(mp3) or os.path.getsize(mp3) == 0:
+        tts(text, mp3)
     if not os.path.exists(raw):
         af = ("silenceremove=start_periods=1:start_threshold=-45dB,"
               "areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse,"
-              f"atempo={VOICE_TEMPO},highpass=f=80,acompressor=threshold=-20dB:ratio=3")
+              f"atempo={VOICE_TEMPO},highpass=f=70,"
+              "equalizer=f=180:t=q:w=1:g=2,equalizer=f=3500:t=q:w=1.5:g=2,"
+              "acompressor=threshold=-20dB:ratio=3")
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", mp3, "-af", af,
                         "-ac", "1", "-ar", str(SR), "-f", "f32le", raw], check=True)
     return np.fromfile(raw, dtype=np.float32).astype(np.float64)
