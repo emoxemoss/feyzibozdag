@@ -64,11 +64,12 @@ def ease_out(t):
 # Örnekler:
 #   TTS_VOICE=tr-TR-EmelNeural python3 render.py
 #   TTS_ENGINE=gemini TTS_VOICE=Charon python3 render.py
+#   COQUI_TOS_AGREED=1 TTS_ENGINE=xtts python3 render.py   (ref/ses_ornegi.wav sesini klonlar)
 SR = 44100
 TTS_ENGINE = os.environ.get("TTS_ENGINE", "edge")
 TTS_VOICE = os.environ.get("TTS_VOICE", "Charon" if TTS_ENGINE == "gemini" else "tr-TR-AhmetNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "+4%")
-VOICE_DIR = os.path.join(OUT, "voice", "gtts" if TTS_ENGINE == "gtts" else f"{TTS_ENGINE}-{TTS_VOICE}")
+VOICE_DIR = os.path.join(OUT, "voice", {"gtts": "gtts", "xtts": "xtts-klon"}.get(TTS_ENGINE, f"{TTS_ENGINE}-{TTS_VOICE}"))
 VOICE_TEMPO = 1.12 if TTS_ENGINE == "gtts" else 1.0
 VOICE_LEAD = 0.25    # ses, sahne başladıktan bu kadar sonra girer
 
@@ -110,7 +111,29 @@ def tts_gemini(text, mp3):
                     "-i", "-", "-b:a", "192k", mp3], input=pcm, check=True)
 
 
+XTTS_REF = os.environ.get("XTTS_REF", os.path.join(HERE, "ref", "ses_ornegi.wav"))
+_xtts = None
+
+
+def tts_xtts(text, mp3):
+    """Coqui XTTS-v2 ile ses klonlama (CPML: yalnızca ticari olmayan kullanım).
+    Lisansı kabul etmek için: COQUI_TOS_AGREED=1 ortam değişkeni."""
+    global _xtts
+    if _xtts is None:
+        import torch
+        from TTS.api import TTS
+        torch.set_num_threads(os.cpu_count() or 4)
+        _xtts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+    wav = mp3[:-4] + ".wav"
+    _xtts.tts_to_file(text, speaker_wav=XTTS_REF, language="tr", file_path=wav,
+                      temperature=0.65, repetition_penalty=5.0, speed=1.0)
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", wav, "-b:a", "192k", mp3], check=True)
+    os.remove(wav)
+
+
 def tts(text, mp3):
+    if TTS_ENGINE == "xtts":
+        return tts_xtts(text, mp3)
     if TTS_ENGINE == "gemini":
         return tts_gemini(text, mp3)
     if TTS_ENGINE == "gtts":
