@@ -59,15 +59,45 @@ def ease_out(t):
     return 1 - (1 - t) ** 3
 
 
+# ---------------------------------------------------------------- seslendirme (Google TTS)
+SR = 44100
+VOICE_DIR = os.path.join(OUT, "voice")
+VOICE_TEMPO = 1.12   # gTTS biraz yavaş konuşuyor, hafif hızlandır
+VOICE_LEAD = 0.25    # ses, sahne başladıktan bu kadar sonra girer
+
+
+def load_voice(i, text):
+    """Satırı gTTS ile seslendir, sessizlikleri kırp, 44.1k mono float dizi döndür (önbellekli)."""
+    os.makedirs(VOICE_DIR, exist_ok=True)
+    mp3 = os.path.join(VOICE_DIR, f"{i:02d}.mp3")
+    raw = os.path.join(VOICE_DIR, f"{i:02d}.raw")
+    if not os.path.exists(mp3):
+        from gtts import gTTS
+        gTTS(text, lang="tr").save(mp3)
+    if not os.path.exists(raw):
+        af = ("silenceremove=start_periods=1:start_threshold=-45dB,"
+              "areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse,"
+              f"atempo={VOICE_TEMPO},highpass=f=80,acompressor=threshold=-20dB:ratio=3")
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", mp3, "-af", af,
+                        "-ac", "1", "-ar", str(SR), "-f", "f32le", raw], check=True)
+    return np.fromfile(raw, dtype=np.float32).astype(np.float64)
+
+
 # ---------------------------------------------------------------- zamanlama
 scenes, t = [], 0.6
-for text, hl, st in SCRIPT:
+for idx, (text, hl, st) in enumerate(SCRIPT):
     s = STYLE[st]
     words = text.split()
-    dur = 0.35 + len(words) * s["word_dt"] + s["hold"] + FADE_OUT
+    voice = load_voice(idx, text)
+    vlen = len(voice) / SR
+    # kelimeler konuşmayla birlikte belirsin
+    word_dt = max(0.08, (vlen * 0.9) / max(1, len(words)))
+    hold = {"climax": 2.2, "hook": 1.0, "turn": 0.6}.get(st, 0.45)
+    dur = VOICE_LEAD + vlen + hold + FADE_OUT
     if text.endswith("…"):
         dur += 0.4
-    scenes.append(dict(text=text, words=words, hl=hl, style=st, start=t, dur=dur))
+    scenes.append(dict(text=text, words=words, hl=hl, style=st, start=t, dur=dur,
+                       voice=voice, word_dt=word_dt))
     t += dur + GAP
 END_START = t
 TOTAL = t + END_CARD
@@ -145,7 +175,7 @@ def draw_scene(overlay, glow, sc, lt):
     if lt > sc["dur"] - FADE_OUT:
         out_a = max(0.0, (sc["dur"] - lt) / FADE_OUT)
     for i, (w, x, y) in enumerate(sc["placed"]):
-        t0 = 0.25 + i * s["word_dt"]
+        t0 = 0.25 + i * sc["word_dt"]
         p = ease_out((lt - t0) / 0.38)
         if p <= 0:
             continue
@@ -158,7 +188,7 @@ def draw_scene(overlay, glow, sc, lt):
             dg.text((x, y + dy), w, font=sc["font"], fill=GOLD + (int(a * 0.55),))
     # vurgulu sahnelerde alt çizgi
     if sc["style"] in ("hook", "climax"):
-        p = ease_out((lt - 0.25 - len(sc["words"]) * s["word_dt"]) / 0.6)
+        p = ease_out((lt - 0.25 - len(sc["words"]) * sc["word_dt"]) / 0.6)
         if p > 0:
             yb = sc["box"][1] + 30
             half = 160 * p
@@ -188,7 +218,7 @@ def progress(overlay, tt):
 def render_video(path):
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-",
-           "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p", path]
+           "-c:v", "libx264", "-preset", "slow", "-crf", "24", "-tune", "grain", "-maxrate", "9M", "-bufsize", "18M", "-pix_fmt", "yuv420p", path]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     for fi in range(NFRAMES):
         tt = fi / FPS
@@ -219,7 +249,6 @@ def render_video(path):
 
 
 # ---------------------------------------------------------------- müzik
-SR = 44100
 
 
 def render_audio(path):
@@ -297,7 +326,29 @@ def render_audio(path):
     out[-fo:] *= np.linspace(1, 0, fo)
     out = np.tanh(out * 1.4) / np.tanh(1.4)
     out /= max(1e-9, np.abs(out).max()) / 0.8
-    stereo = np.stack([out, np.roll(out, int(0.012 * SR))], -1)
+
+    # seslendirme: müzik altta kalsın (ducking), ses önde
+    music = out * 0.22
+    voice = np.zeros(n)
+    env = np.zeros(n)
+    for sc in scenes:
+        v = sc["voice"]
+        s0 = int((sc["start"] + VOICE_LEAD) * SR)
+        s1 = min(n, s0 + len(v))
+        voice[s0:s1] += v[: s1 - s0]
+        env[max(0, s0 - int(0.2 * SR)):min(n, s1 + int(0.3 * SR))] = 1
+    k = int(0.25 * SR)
+    env = np.convolve(env, np.ones(k) / k, mode="same")
+    music *= 1 - 0.45 * env
+    voice /= max(1e-9, np.abs(voice).max()) / 0.85
+    vrev = voice.copy()
+    for dly, g in ((0.023, 0.12), (0.041, 0.08)):
+        dd = int(dly * SR)
+        vrev[dd:] += g * voice[:-dd]
+    mix = np.tanh((music + vrev) * 1.1) / np.tanh(1.1)
+    mix /= max(1e-9, np.abs(mix).max()) / 0.9
+    out = mix
+    stereo = np.stack([out, out], -1)
     with wave.open(path, "wb") as wf:
         wf.setnchannels(2); wf.setsampwidth(2); wf.setframerate(SR)
         wf.writeframes((stereo * 32767).astype(np.int16).tobytes())
