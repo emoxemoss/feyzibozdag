@@ -8,8 +8,10 @@
 
 Plan 2 haftalık bir döngü:
 
-- **Çift numaralı haftalar (ISO hafta no) → Hazırlık haftası:** uzun videonun konusu, senaryosu ve seslendirmesi.
-- **Tek numaralı haftalar → Yayın haftası:** kurgu, kapak ve **Cumartesi uzun video yayını.**
+Döngü 23 Kasım 2026 Pazartesi'den başlar ve her hafta sırayla değişir:
+
+- **Hazırlık haftası** (23 Kasım, 7 Aralık, 21 Aralık, 4 Ocak …): uzun videonun konusu, senaryosu ve seslendirmesi.
+- **Yayın haftası** (30 Kasım, 14 Aralık, 28 Aralık, 11 Ocak …): kurgu, kapak ve **Cumartesi uzun video yayını** (5 Aralık, 19 Aralık, 2 Ocak, 16 Ocak …).
 
 Böylece her iki haftada 1 uzun video çıkar (ayda ~2). Shorts her hafta **Pazartesi, Çarşamba, Cuma** yayınlanır (haftada 3).
 
